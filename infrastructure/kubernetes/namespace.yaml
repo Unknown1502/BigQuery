@@ -1,0 +1,65 @@
+# Kubernetes Namespace for Dynamic Pricing Intelligence System
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dynamic-pricing
+  labels:
+    name: dynamic-pricing
+    environment: production
+    project: multimodal-geospatial-intelligence
+    managed-by: terraform
+  annotations:
+    description: "Namespace for Dynamic Pricing with Multimodal Geospatial Intelligence system"
+    contact: "data-engineering-team@company.com"
+    cost-center: "engineering"
+---
+# Resource Quota for the namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dynamic-pricing-quota
+  namespace: dynamic-pricing
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.cpu: "40"
+    limits.memory: 80Gi
+    persistentvolumeclaims: "10"
+    pods: "50"
+    services: "20"
+    secrets: "30"
+    configmaps: "30"
+---
+# Network Policy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dynamic-pricing-network-policy
+  namespace: dynamic-pricing
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: dynamic-pricing
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: dynamic-pricing

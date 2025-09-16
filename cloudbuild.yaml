@@ -1,0 +1,333 @@
+# Google Cloud Build Configuration for Dynamic Pricing Intelligence
+# Automated CI/CD pipeline for building, testing, and deploying services
+
+steps:
+  # Step 1: Install dependencies and run tests
+  - name: 'python:3.9-slim'
+    id: 'test'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install --upgrade pip setuptools wheel
+        pip install --use-pep517 -r requirements.txt -r requirements-dev.txt
+        python -m pytest tests/ -v --cov=src --cov-report=xml --cov-report=term
+        python -m flake8 src/ --max-line-length=88 --exclude=__pycache__
+        python -m black --check src/
+        python -m mypy src/ --ignore-missing-imports
+    env:
+      - 'PYTHONPATH=/workspace'
+
+  # Step 2: Security scanning
+  - name: 'python:3.9-slim'
+    id: 'security-scan'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install --upgrade pip setuptools wheel
+        pip install --use-pep517 bandit safety
+        bandit -r src/ -f json -o bandit-report.json || true
+        safety check --json --output safety-report.json || true
+
+  # Step 3: Build API Gateway Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-api-gateway'
+    args:
+      - 'build'
+      - '-f'
+      - 'infrastructure/docker/Dockerfile.api'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/api-gateway:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/api-gateway:latest'
+      - '--target'
+      - 'production'
+      - '.'
+    waitFor: ['test']
+
+  # Step 4: Build Image Processor Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-image-processor'
+    args:
+      - 'build'
+      - '-f'
+      - 'infrastructure/docker/Dockerfile.processor'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/image-processor:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/image-processor:latest'
+      - '--target'
+      - 'production'
+      - '.'
+    waitFor: ['test']
+
+  # Step 5: Build Pricing Engine Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-pricing-engine'
+    args:
+      - 'build'
+      - '-f'
+      - 'infrastructure/docker/Dockerfile.api'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/pricing-engine:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/pricing-engine:latest'
+      - '--target'
+      - 'production'
+      - '--build-arg'
+      - 'SERVICE_NAME=pricing-engine'
+      - '.'
+    waitFor: ['test']
+
+  # Step 6: Build Real-time Processor Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-real-time-processor'
+    args:
+      - 'build'
+      - '-f'
+      - 'infrastructure/docker/Dockerfile.processor'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/real-time-processor:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/real-time-processor:latest'
+      - '--target'
+      - 'production'
+      - '--build-arg'
+      - 'SERVICE_NAME=stream-processor'
+      - '.'
+    waitFor: ['test']
+
+  # Step 7: Build Data Ingestion Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-data-ingestion'
+    args:
+      - 'build'
+      - '-f'
+      - 'infrastructure/docker/Dockerfile.processor'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/data-ingestion:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/data-ingestion:latest'
+      - '--target'
+      - 'production'
+      - '--build-arg'
+      - 'SERVICE_NAME=data-ingestion'
+      - '.'
+    waitFor: ['test']
+
+  # Step 8: Push all images to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-images'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker push gcr.io/$PROJECT_ID/api-gateway:$COMMIT_SHA
+        docker push gcr.io/$PROJECT_ID/api-gateway:latest
+        docker push gcr.io/$PROJECT_ID/image-processor:$COMMIT_SHA
+        docker push gcr.io/$PROJECT_ID/image-processor:latest
+        docker push gcr.io/$PROJECT_ID/pricing-engine:$COMMIT_SHA
+        docker push gcr.io/$PROJECT_ID/pricing-engine:latest
+        docker push gcr.io/$PROJECT_ID/real-time-processor:$COMMIT_SHA
+        docker push gcr.io/$PROJECT_ID/real-time-processor:latest
+        docker push gcr.io/$PROJECT_ID/data-ingestion:$COMMIT_SHA
+        docker push gcr.io/$PROJECT_ID/data-ingestion:latest
+    waitFor: 
+      - 'build-api-gateway'
+      - 'build-image-processor'
+      - 'build-pricing-engine'
+      - 'build-real-time-processor'
+      - 'build-data-ingestion'
+
+  # Step 9: Deploy BigQuery functions and models
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'deploy-bigquery'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Deploy BigQuery functions
+        for function_file in src/bigquery/functions/*.sql; do
+          echo "Deploying BigQuery function: $function_file"
+          bq query --use_legacy_sql=false < "$function_file"
+        done
+        
+        # Deploy BigQuery models
+        for model_file in src/bigquery/models/*.sql; do
+          echo "Deploying BigQuery model: $model_file"
+          bq query --use_legacy_sql=false < "$model_file"
+        done
+        
+        # Deploy BigQuery procedures
+        for procedure_file in src/bigquery/procedures/*.sql; do
+          echo "Deploying BigQuery procedure: $procedure_file"
+          bq query --use_legacy_sql=false < "$procedure_file"
+        done
+        
+        # Deploy BigQuery views
+        for view_file in src/bigquery/views/*.sql; do
+          echo "Deploying BigQuery view: $view_file"
+          bq query --use_legacy_sql=false < "$view_file"
+        done
+    waitFor: ['test']
+
+  # Step 10: Deploy to staging environment (if branch is develop)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'deploy-staging'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [ "$BRANCH_NAME" = "develop" ]; then
+          echo "Deploying to staging environment..."
+          
+          # Install kubectl
+          gcloud components install kubectl
+          
+          # Get GKE credentials
+          gcloud container clusters get-credentials dynamic-pricing-staging --region=us-central1
+          
+          # Update Kubernetes deployments with new image tags
+          kubectl set image deployment/api-gateway api-gateway=gcr.io/$PROJECT_ID/api-gateway:$COMMIT_SHA -n dynamic-pricing-staging
+          kubectl set image deployment/image-processor image-processor=gcr.io/$PROJECT_ID/image-processor:$COMMIT_SHA -n dynamic-pricing-staging
+          kubectl set image deployment/pricing-engine pricing-engine=gcr.io/$PROJECT_ID/pricing-engine:$COMMIT_SHA -n dynamic-pricing-staging
+          kubectl set image deployment/real-time-processor real-time-processor=gcr.io/$PROJECT_ID/real-time-processor:$COMMIT_SHA -n dynamic-pricing-staging
+          kubectl set image deployment/data-ingestion data-ingestion=gcr.io/$PROJECT_ID/data-ingestion:$COMMIT_SHA -n dynamic-pricing-staging
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/api-gateway -n dynamic-pricing-staging --timeout=300s
+          kubectl rollout status deployment/pricing-engine -n dynamic-pricing-staging --timeout=300s
+          
+          echo "Staging deployment completed successfully"
+        else
+          echo "Skipping staging deployment (not develop branch)"
+        fi
+    waitFor: ['push-images', 'deploy-bigquery']
+
+  # Step 11: Run integration tests in staging
+  - name: 'python:3.9-slim'
+    id: 'integration-tests'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [ "$BRANCH_NAME" = "develop" ]; then
+          echo "Running integration tests against staging..."
+          pip install --upgrade pip setuptools wheel
+          pip install --use-pep517 -r requirements.txt -r requirements-dev.txt
+          export STAGING_API_URL="https://api-staging.dynamic-pricing.com"
+          python -m pytest tests/integration/ -v --staging
+          echo "Integration tests completed successfully"
+        else
+          echo "Skipping integration tests (not develop branch)"
+        fi
+    env:
+      - 'PYTHONPATH=/workspace'
+    waitFor: ['deploy-staging']
+
+  # Step 12: Deploy to production (if branch is main and tests pass)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'deploy-production'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [ "$BRANCH_NAME" = "main" ]; then
+          echo "Deploying to production environment..."
+          
+          # Get GKE credentials for production
+          gcloud container clusters get-credentials dynamic-pricing-production --region=us-central1
+          
+          # Blue-green deployment strategy
+          # Update deployments with new image tags
+          kubectl set image deployment/api-gateway api-gateway=gcr.io/$PROJECT_ID/api-gateway:$COMMIT_SHA -n dynamic-pricing
+          kubectl set image deployment/image-processor image-processor=gcr.io/$PROJECT_ID/image-processor:$COMMIT_SHA -n dynamic-pricing
+          kubectl set image deployment/pricing-engine pricing-engine=gcr.io/$PROJECT_ID/pricing-engine:$COMMIT_SHA -n dynamic-pricing
+          kubectl set image deployment/real-time-processor real-time-processor=gcr.io/$PROJECT_ID/real-time-processor:$COMMIT_SHA -n dynamic-pricing
+          kubectl set image deployment/data-ingestion data-ingestion=gcr.io/$PROJECT_ID/data-ingestion:$COMMIT_SHA -n dynamic-pricing
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/api-gateway -n dynamic-pricing --timeout=600s
+          kubectl rollout status deployment/pricing-engine -n dynamic-pricing --timeout=600s
+          kubectl rollout status deployment/image-processor -n dynamic-pricing --timeout=600s
+          
+          # Run smoke tests
+          echo "Running production smoke tests..."
+          sleep 30  # Wait for services to be ready
+          
+          # Health check endpoints
+          kubectl exec -n dynamic-pricing deployment/api-gateway -- curl -f http://localhost:8000/health
+          kubectl exec -n dynamic-pricing deployment/pricing-engine -- curl -f http://localhost:8080/health
+          
+          echo "Production deployment completed successfully"
+        else
+          echo "Skipping production deployment (not main branch)"
+        fi
+    waitFor: ['integration-tests']
+
+  # Step 13: Notify deployment status
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'notify'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Build and deployment completed for commit $COMMIT_SHA"
+        echo "Branch: $BRANCH_NAME"
+        echo "Build ID: $BUILD_ID"
+        
+        # Send notification to Slack (if webhook is configured)
+        if [ ! -z "$_SLACK_WEBHOOK" ]; then
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"Dynamic Pricing Intelligence: Build $BUILD_ID completed successfully for branch $BRANCH_NAME\"}" \
+            $_SLACK_WEBHOOK
+        fi
+    waitFor: ['deploy-production']
+
+# Build options
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+  env:
+    - 'CLOUDSDK_COMPUTE_ZONE=us-central1-a'
+    - 'CLOUDSDK_CONTAINER_CLUSTER=dynamic-pricing-production'
+
+# Timeout for the entire build
+timeout: '3600s'
+
+# Substitutions for build variables
+substitutions:
+  _SLACK_WEBHOOK: ''
+  _ENVIRONMENT: 'production'
+  _REGION: 'us-central1'
+
+# Images to be pushed to Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/api-gateway:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/api-gateway:latest'
+  - 'gcr.io/$PROJECT_ID/image-processor:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/image-processor:latest'
+  - 'gcr.io/$PROJECT_ID/pricing-engine:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/pricing-engine:latest'
+  - 'gcr.io/$PROJECT_ID/real-time-processor:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/real-time-processor:latest'
+  - 'gcr.io/$PROJECT_ID/data-ingestion:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/data-ingestion:latest'
+
+# Artifacts to store
+artifacts:
+  objects:
+    location: 'gs://$PROJECT_ID-build-artifacts'
+    paths:
+      - 'bandit-report.json'
+      - 'safety-report.json'
+      - 'coverage.xml'
+
+# Build triggers
+# This configuration supports:
+# - Push to main branch: Deploy to production
+# - Push to develop branch: Deploy to staging
+# - Pull requests: Run tests only
+# - Manual triggers: Custom deployment options

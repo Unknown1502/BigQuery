@@ -1,0 +1,14 @@
+# This directory contains sample street images for testing the visual intelligence pipeline
+# Images should be in common formats (JPG, PNG) and represent various urban scenarios:
+# - Business districts with varying crowd levels
+# - Residential areas with different accessibility conditions
+# - Entertainment venues during different times
+# - Transportation hubs with traffic patterns
+# - Mixed-use areas with diverse activities
+
+# Sample image naming convention:
+# {location_type}_{location_id}_{timestamp}_{scenario}.jpg
+# Examples:
+# - business_downtown_001_20240115_0800_rush_hour.jpg
+# - entertainment_district_002_20240115_2100_nightlife.jpg
+# - residential_suburb_003_20240115_1400_quiet.jpg

@@ -1,0 +1,72 @@
+# Include production requirements
+-r requirements.txt
+
+# Build system requirements for PEP 517 compliance
+wheel>=0.37.0
+setuptools>=61.0
+
+# Development and Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-xdist==3.5.0
+pytest-benchmark==4.0.0
+
+# Code Quality
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
+mypy==1.7.1
+# pylint removed due to dill version conflict with apache-beam
+# Install separately if needed: pip install pylint
+bandit==1.7.5
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==1.3.0
+mkdocs==1.5.3
+mkdocs-material==9.4.8
+
+# Development Tools
+pre-commit==3.6.0
+tox==4.11.4
+coverage==7.3.2
+factory-boy==3.3.0
+
+# API Testing
+httpx==0.25.2
+respx==0.20.2
+
+# Performance Testing
+locust==2.17.0
+
+# Database Testing
+pytest-postgresql==5.0.0
+alembic==1.13.0
+
+# Mocking and Fixtures
+responses==0.24.1
+freezegun==1.2.2
+faker==20.1.0
+
+# Type Checking
+types-requests==2.31.0.10
+types-PyYAML==6.0.12.12
+types-python-dateutil==2.8.19.14
+
+# Jupyter for Analysis
+jupyter==1.0.0
+ipykernel==6.26.0
+matplotlib==3.8.2
+seaborn==0.13.0
+
+# Security Testing
+# safety removed due to pydantic version conflicts
+# semgrep removed due to urllib3 version conflicts
+# Install separately if needed: pip install safety semgrep
+
+# Infrastructure Testing
+# terraform-compliance removed due to IPython version conflicts
+# checkov removed due to networkx version conflicts
+# Install separately if needed: pip install terraform-compliance checkov

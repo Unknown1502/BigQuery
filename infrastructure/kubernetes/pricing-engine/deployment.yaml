@@ -1,0 +1,394 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pricing-engine
+  namespace: dynamic-pricing
+  labels:
+    app: pricing-engine
+    component: core-service
+    version: v1.0.0
+spec:
+  replicas: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: pricing-engine
+  template:
+    metadata:
+      labels:
+        app: pricing-engine
+        component: core-service
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: dynamic-pricing-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+      - name: pricing-engine
+        image: gcr.io/PROJECT_ID/pricing-engine:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 8090
+          name: metrics
+          protocol: TCP
+        env:
+        - name: PROJECT_ID
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: project_id
+        - name: BIGQUERY_DATASET
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: bigquery_dataset
+        - name: VERTEX_AI_ENDPOINT_DEMAND
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: vertex_ai_endpoint_demand
+        - name: VERTEX_AI_ENDPOINT_CROWD
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: vertex_ai_endpoint_crowd
+        - name: VERTEX_AI_ENDPOINT_ACTIVITY
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: vertex_ai_endpoint_activity
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: redis_host
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: redis_port
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: dynamic-pricing-secrets
+              key: redis_password
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: log_level
+        - name: PRICING_STRATEGY
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: pricing_strategy
+        - name: MAX_SURGE_MULTIPLIER
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: max_surge_multiplier
+        - name: MIN_SURGE_MULTIPLIER
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: min_surge_multiplier
+        - name: CONFIDENCE_THRESHOLD
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: confidence_threshold
+        - name: AB_TEST_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: ab_test_enabled
+        - name: COMPETITOR_API_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: competitor_api_enabled
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /startup
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+        - name: secrets-volume
+          mountPath: /app/secrets
+          readOnly: true
+        - name: cache-volume
+          mountPath: /app/cache
+      volumes:
+      - name: config-volume
+        configMap:
+          name: dynamic-pricing-config
+      - name: secrets-volume
+        secret:
+          secretName: dynamic-pricing-secrets
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 1Gi
+      nodeSelector:
+        workload-type: "general-purpose"
+      tolerations:
+      - key: "workload-type"
+        operator: "Equal"
+        value: "general-purpose"
+        effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - pricing-engine
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: In
+                values:
+                - high-memory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pricing-engine-service
+  namespace: dynamic-pricing
+  labels:
+    app: pricing-engine
+    component: core-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  - port: 8090
+    targetPort: 8090
+    protocol: TCP
+    name: metrics
+  selector:
+    app: pricing-engine
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: pricing-engine-hpa
+  namespace: dynamic-pricing
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: pricing-engine
+  minReplicas: 5
+  maxReplicas: 50
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Pods
+    pods:
+      metric:
+        name: pricing_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  - type: Object
+    object:
+      metric:
+        name: redis_connection_pool_usage
+      target:
+        type: Value
+        value: "80"
+      describedObject:
+        apiVersion: v1
+        kind: Service
+        name: redis-service
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Percent
+        value: 200
+        periodSeconds: 15
+      - type: Pods
+        value: 10
+        periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 180
+      policies:
+      - type: Percent
+        value: 20
+        periodSeconds: 60
+      selectPolicy: Min
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pricing-engine-pdb
+  namespace: dynamic-pricing
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: pricing-engine
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pricing-engine-netpol
+  namespace: dynamic-pricing
+spec:
+  podSelector:
+    matchLabels:
+      app: pricing-engine
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api-gateway
+    - podSelector:
+        matchLabels:
+          app: real-time-processor
+    - podSelector:
+        matchLabels:
+          app: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8090
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pricing-engine-config
+  namespace: dynamic-pricing
+data:
+  pricing_strategies.yaml: |
+    strategies:
+      surge:
+        enabled: true
+        max_multiplier: 3.0
+        min_multiplier: 0.8
+        crowd_factor_weight: 0.3
+        weather_factor_weight: 0.2
+        traffic_factor_weight: 0.2
+        event_factor_weight: 0.3
+      
+      ab_test:
+        enabled: true
+        test_percentage: 10
+        control_group_percentage: 50
+        
+      competitor_analysis:
+        enabled: true
+        price_match_threshold: 0.95
+        undercut_percentage: 5
+        
+      business_rules:
+        max_price_increase_per_hour: 0.5
+        min_confidence_score: 0.7
+        emergency_surge_cap: 5.0
+        
+  model_configs.yaml: |
+    models:
+      demand_forecasting:
+        endpoint: "projects/PROJECT_ID/locations/us-central1/endpoints/ENDPOINT_ID"
+        timeout_seconds: 5
+        retry_attempts: 3
+        
+      crowd_detection:
+        endpoint: "projects/PROJECT_ID/locations/us-central1/endpoints/ENDPOINT_ID"
+        timeout_seconds: 10
+        confidence_threshold: 0.5
+        
+      activity_classification:
+        endpoint: "projects/PROJECT_ID/locations/us-central1/endpoints/ENDPOINT_ID"
+        timeout_seconds: 8
+        top_k_results: 5

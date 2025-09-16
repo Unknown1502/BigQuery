@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: dynamic-pricing
+  labels:
+    app: api-gateway
+    component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+      - name: api-gateway
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: PROJECT_ID
+          value: "geosptial-471213"
+        - name: REGION
+          value: "us-central1"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway-service
+  namespace: dynamic-pricing
+spec:
+  selector:
+    app: api-gateway
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pricing-engine
+  namespace: dynamic-pricing
+  labels:
+    app: pricing-engine
+    component: engine
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pricing-engine
+  template:
+    metadata:
+      labels:
+        app: pricing-engine
+    spec:
+      containers:
+      - name: pricing-engine
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: PROJECT_ID
+          value: "geosptial-471213"
+        - name: REGION
+          value: "us-central1"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pricing-engine-service
+  namespace: dynamic-pricing
+spec:
+  selector:
+    app: pricing-engine
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-processor
+  namespace: dynamic-pricing
+  labels:
+    app: image-processor
+    component: processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: image-processor
+  template:
+    metadata:
+      labels:
+        app: image-processor
+    spec:
+      containers:
+      - name: image-processor
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: PROJECT_ID
+          value: "geosptial-471213"
+        - name: REGION
+          value: "us-central1"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "300m"
+          limits:
+            memory: "1Gi"
+            cpu: "600m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: image-processor-service
+  namespace: dynamic-pricing
+spec:
+  selector:
+    app: image-processor
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-ingestion
+  namespace: dynamic-pricing
+  labels:
+    app: data-ingestion
+    component: ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-ingestion
+  template:
+    metadata:
+      labels:
+        app: data-ingestion
+    spec:
+      containers:
+      - name: data-ingestion
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: PROJECT_ID
+          value: "geosptial-471213"
+        - name: REGION
+          value: "us-central1"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-ingestion-service
+  namespace: dynamic-pricing
+spec:
+  selector:
+    app: data-ingestion
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP

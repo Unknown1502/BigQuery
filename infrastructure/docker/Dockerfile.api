@@ -1,0 +1,83 @@
+# Multi-stage build for API Gateway Service
+FROM python:3.9-slim as base
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt requirements-dev.txt ./
+
+# Install Python dependencies with PEP 517 compliance
+RUN pip install --no-cache-dir --use-pep517 --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --use-pep517 -r requirements.txt
+
+# Development stage
+FROM base as development
+RUN pip install --no-cache-dir --use-pep517 -r requirements-dev.txt
+COPY . .
+RUN chown -R appuser:appuser /app
+USER appuser
+EXPOSE 8000 8080
+CMD ["uvicorn", "src.services.api-gateway.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+# Production stage
+FROM base as production
+
+# Copy application code
+COPY src/ ./src/
+COPY data/schemas/ ./data/schemas/
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/cache && \
+    chown -R appuser:appuser /app
+
+# Install production WSGI server
+RUN pip install --no-cache-dir --use-pep517 gunicorn uvicorn[standard]
+
+# Switch to non-root user
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Expose ports
+EXPOSE 8000 8080
+
+# Production entrypoint with Gunicorn
+ENTRYPOINT ["gunicorn", "src.services.api-gateway.main:app", \
+           "-w", "4", \
+           "-k", "uvicorn.workers.UvicornWorker", \
+           "--bind", "0.0.0.0:8000", \
+           "--access-logfile", "-", \
+           "--error-logfile", "-", \
+           "--log-level", "info", \
+           "--timeout", "30", \
+           "--keep-alive", "5", \
+           "--max-requests", "1000", \
+           "--max-requests-jitter", "100", \
+           "--preload"]
+
+# Labels for metadata
+LABEL maintainer="Dynamic Pricing Team" \
+      version="1.0.0" \
+      description="API Gateway Service for Dynamic Pricing Intelligence" \
+      component="api-gateway"

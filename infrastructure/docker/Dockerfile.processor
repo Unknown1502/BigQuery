@@ -1,0 +1,88 @@
+# Multi-stage build for Image Processing Service
+FROM python:3.9-slim as base
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgthread-2.0-0 \
+    libgtk-3-0 \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libv4l-dev \
+    libxvidcore-dev \
+    libx264-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libatlas-base-dev \
+    gfortran \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt requirements-dev.txt ./
+
+# Install Python dependencies with PEP 517 compliance
+RUN pip install --no-cache-dir --use-pep517 --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --use-pep517 -r requirements.txt
+
+# Development stage
+FROM base as development
+RUN pip install --no-cache-dir --use-pep517 -r requirements-dev.txt
+COPY . .
+RUN chown -R appuser:appuser /app
+USER appuser
+CMD ["python", "-m", "src.services.image-processor.main"]
+
+# Production stage
+FROM base as production
+
+# Copy application code
+COPY src/ ./src/
+COPY data/schemas/ ./data/schemas/
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/cache /app/models && \
+    chown -R appuser:appuser /app
+
+# Download pre-trained models
+RUN wget -O /app/models/yolo5s.pt https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5s.pt && \
+    wget -O /app/models/resnet50_weights.pth https://download.pytorch.org/models/resnet50-0676ba61.pth
+
+# Switch to non-root user
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8080/health')" || exit 1
+
+# Expose ports
+EXPOSE 8080 8090
+
+# Set entrypoint
+ENTRYPOINT ["python", "-m", "src.services.image-processor.main"]
+
+# Labels for metadata
+LABEL maintainer="Dynamic Pricing Team" \
+      version="1.0.0" \
+      description="Image Processing Service for Dynamic Pricing Intelligence" \
+      component="image-processor"

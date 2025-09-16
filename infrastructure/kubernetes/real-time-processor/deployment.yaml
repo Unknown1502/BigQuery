@@ -1,0 +1,279 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: real-time-processor
+  namespace: dynamic-pricing
+  labels:
+    app: real-time-processor
+    component: stream-processing
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: real-time-processor
+  template:
+    metadata:
+      labels:
+        app: real-time-processor
+        component: stream-processing
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: dynamic-pricing-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+      - name: real-time-processor
+        image: gcr.io/PROJECT_ID/real-time-processor:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 8090
+          name: metrics
+          protocol: TCP
+        env:
+        - name: PROJECT_ID
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: project_id
+        - name: BIGQUERY_DATASET
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: bigquery_dataset
+        - name: PUBSUB_SUBSCRIPTION
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: pubsub_subscription
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: redis_host
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: redis_port
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: log_level
+        - name: BEAM_RUNNER
+          value: "DataflowRunner"
+        - name: DATAFLOW_PROJECT
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: project_id
+        - name: DATAFLOW_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: dynamic-pricing-config
+              key: region
+        - name: DATAFLOW_TEMP_LOCATION
+          value: "gs://PROJECT_ID-data-processing/temp"
+        - name: DATAFLOW_STAGING_LOCATION
+          value: "gs://PROJECT_ID-data-processing/staging"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+        - name: secrets-volume
+          mountPath: /app/secrets
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: dynamic-pricing-config
+      - name: secrets-volume
+        secret:
+          secretName: dynamic-pricing-secrets
+      nodeSelector:
+        workload-type: "compute-intensive"
+      tolerations:
+      - key: "workload-type"
+        operator: "Equal"
+        value: "compute-intensive"
+        effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - real-time-processor
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: real-time-processor-service
+  namespace: dynamic-pricing
+  labels:
+    app: real-time-processor
+    component: stream-processing
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  - port: 8090
+    targetPort: 8090
+    protocol: TCP
+    name: metrics
+  selector:
+    app: real-time-processor
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: real-time-processor-hpa
+  namespace: dynamic-pricing
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: real-time-processor
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: pubsub_queue_depth
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 4
+        periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+      selectPolicy: Min
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: real-time-processor-pdb
+  namespace: dynamic-pricing
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: real-time-processor
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: real-time-processor-netpol
+  namespace: dynamic-pricing
+spec:
+  podSelector:
+    matchLabels:
+      app: real-time-processor
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api-gateway
+    - podSelector:
+        matchLabels:
+          app: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8090
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
